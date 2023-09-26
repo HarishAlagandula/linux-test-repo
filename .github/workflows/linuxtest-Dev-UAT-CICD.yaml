@@ -1,0 +1,162 @@
+name: linuxtest-Dev-UAT-CICD
+run-name: Deploy to ${{ (inputs.deployafterbuild) || ( github.ref == 'refs/heads/develop' && github.event_name == 'push' && 'Dev' ) || ( github.ref == 'refs/heads/release' && github.event_name == 'push' && 'UAT' ) }} by @${{ github.actor }}
+
+env: 
+  AZURE_WEBAPP_PACKAGE_PATH: '.'      
+  DOTNET_VERSION: '5.0'
+  Artifact_Name: 'linux-test'
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual deployment from GitHub UI"
+      deployafterbuild:
+        type: choice
+        description: "Do you want to trigger a deployment?"
+        default: "No"
+        required: true
+        options:
+          - "No"
+          - "dev"
+          - "uat"
+  push: 
+    branches:
+      - "develop"
+      - "release"
+    paths-ignore:
+      - ".github/**"
+      - "README.md"
+      - ".gitattributes"
+      - ".gitmodules"
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    env: 
+      AZURE_WEBAPP_PACKAGE_PATH: '.'      
+      DOTNET_VERSION: '5.0'
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: "Print branch name ${{ github.head_ref || github.ref_name }}"
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'pull_request'}} 
+        run: echo The source branch is '${{ github.head_ref || github.ref_name }}'
+        shell: bash
+          
+      - name: "Print manual run reason"
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          echo 'Reason: ${{ github.event.inputs.reason }}'
+
+      - name: Set up .NET Core
+        uses: actions/setup-dotnet@v2
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      
+      - name: Restore dependencies
+        run: dotnet restore
+        
+      - name: Build with dotnet
+        run: dotnet build --configuration Release --no-restore
+
+      - name: dotnet publish
+        run: dotnet publish -c Release -o ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}/${{ env.Artifact_Name }}
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.Artifact_Name }}
+          path: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}/${{ env.Artifact_Name }}
+          
+  deploy-Dev:
+    runs-on:
+      - "self-hosted"
+      - "fmg"
+      - "spot"
+       
+    needs: 
+      - "build"
+    if: ${{ ( github.ref == 'refs/heads/develop' && github.event_name == 'push' ) || ( github.event_name == 'workflow_dispatch' && github.event.inputs.deployafterbuild == 'dev' ) }}
+    environment:
+      name: 'DEV'
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.DEV_WEBAPP_NAME }}
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ env.Artifact_Name }}
+          path: ${{ env.Artifact_Name }}
+          
+#       - name: Log in with Azure
+#         uses: azure/login@v1
+#         with:
+#          creds: ${{ secrets.AZURE_CREDENTIALS }}
+#          enable-AzPSSession: true
+        
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_FMGWEBAPP1324_PROFILE }}
+          package: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}/${{ env.Artifact_Name }}
+          
+#       - name: Azure App Service Settings
+#         uses: Azure/appservice-settings@v1
+#         with:
+#           app-name: ${{ env.AZURE_WEBAPP_NAME }}
+#           publish-profile: ${{ secrets.AZURE_WEBAPP_FMGWEBAPP1324_PROFILE }}
+#           slot-name: ${{ env.slot }}
+#           app-settings-json: ${{ secrets.APP_SETTINGS }}
+#           connection-strings-json: ${{ secrets.CONNECTION_STRINGS  }}
+#           # general-settings-json: ''
+#           mask-inputs: true
+
+  deploy-UAT:
+    runs-on: 
+        - "self-hosted"
+        - "fmg"
+        - "spot"
+       
+    needs: 
+      - "build"
+    if: ${{ ( github.ref == 'refs/heads/release' && github.event_name == 'push' ) || ( github.event_name == 'workflow_dispatch' && github.event.inputs.deployafterbuild == 'UAT' ) }}
+    environment:
+      name: 'UAT'
+      
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.UAT_WEBAPP_NAME }}
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ env.Artifact_Name }}
+          path: ${{ env.Artifact_Name }}
+          
+#       - name: Log in with Azure
+#         uses: azure/login@v1
+#         with:
+#          creds: ${{ secrets.AZURE_CREDENTIALS }}
+#          enable-AzPSSession: true
+        
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_FMGWEBAPP1324_PROFILE }}
+          package: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}/${{ env.Artifact_Name }}
